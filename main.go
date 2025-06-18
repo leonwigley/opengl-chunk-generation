@@ -2,8 +2,11 @@ package main
 
 import (
 	"fmt"
+	"image"
+	_ "image/png"
 	"log"
 	"math"
+	"os"
 	"runtime"
 
 	"github.com/go-gl/gl/v4.6-core/gl"
@@ -29,7 +32,7 @@ func main() {
 	glfw.WindowHint(glfw.OpenGLProfile, glfw.OpenGLCoreProfile)
 	glfw.WindowHint(glfw.OpenGLForwardCompatible, glfw.True)
 
-	window, err := glfw.CreateWindow(800, 600, "something", nil, nil)
+	window, err := glfw.CreateWindow(800, 600, "Chunk Rendering", nil, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -40,59 +43,53 @@ func main() {
 	}
 	gl.Enable(gl.DEPTH_TEST)
 
-	// Create shader
+	// Shader sources
 	vertexShader := `
-    #version 460
-    in vec3 position;
-    uniform mat4 model;
-    uniform mat4 view;
-    uniform mat4 projection;
-    void main() {
-        gl_Position = projection * view * model * vec4(position, 1.0);
-    }`
+	#version 460 core
+	layout(location = 0) in vec3 position;
+	layout(location = 1) in vec2 texCoord;
+
+	out vec2 TexCoord;
+
+	uniform mat4 model;
+	uniform mat4 view;
+	uniform mat4 projection;
+
+	void main() {
+		gl_Position = projection * view * model * vec4(position, 1.0);
+		TexCoord = texCoord;
+	}
+	`
+
 	fragmentShader := `
-    #version 460
-    out vec4 fragColor;
-    void main() {
-        fragColor = vec4(0.5, 0.8, 0.2, 1.0);
-    }`
+	#version 460 core
+	in vec2 TexCoord;
+	out vec4 fragColor;
+
+	uniform sampler2D texture1;
+
+	void main() {
+		fragColor = texture(texture1, TexCoord);
+	}
+	`
+
 	program, err := createShaderProgram(vertexShader, fragmentShader)
 	if err != nil {
 		log.Fatalf("Shader error: %v", err)
 	}
 	gl.UseProgram(program)
 
-	// Cube data
-	vertices := []float32{
-		-0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5,
-		-0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5, 0.5,
-	}
-	indices := []uint32{
-		0, 1, 2, 2, 3, 0,
-		4, 5, 6, 6, 7, 4,
-		0, 4, 7, 7, 3, 0,
-		1, 5, 6, 6, 2, 1,
-		3, 2, 6, 6, 7, 3,
-		0, 1, 5, 5, 4, 0,
+	texture, err := loadTexture("block.png")
+	if err != nil {
+		log.Fatalf("texture error: %v", err)
 	}
 
-	var vao, vbo, ebo uint32
-	gl.GenVertexArrays(1, &vao)
-	gl.GenBuffers(1, &vbo)
-	gl.GenBuffers(1, &ebo)
-
-	gl.BindVertexArray(vao)
-	gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
-	gl.BufferData(gl.ARRAY_BUFFER, len(vertices)*4, gl.Ptr(vertices), gl.STATIC_DRAW)
-
-	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo)
-	gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(indices)*4, gl.Ptr(indices), gl.STATIC_DRAW)
-
-	gl.VertexAttribPointer(0, 3, gl.FLOAT, false, 3*4, nil)
-	gl.EnableVertexAttribArray(0)
+	gl.ActiveTexture(gl.TEXTURE0)
+	gl.BindTexture(gl.TEXTURE_2D, texture)
+	gl.Uniform1i(gl.GetUniformLocation(program, gl.Str("texture1\x00")), 0)
 
 	// Camera setup
-	camera := NewCamera(mgl32.Vec3{0, 0, 3})
+	camera := NewCamera(mgl32.Vec3{0, 0, 10})
 	projection := mgl32.Perspective(mgl32.DegToRad(45), 800.0/600.0, 0.1, 100.0)
 	model := mgl32.Ident4()
 
@@ -114,9 +111,14 @@ func main() {
 
 	lastTime := glfw.GetTime()
 
+	// Create world and one chunk
+	world := World{Chunks: make(map[[2]int]*Chunk)}
+	chunk := NewFlatChunk()
+	chunk.UploadMesh()
+	world.Chunks[[2]int{0, 0}] = chunk
+
 	// Main loop
 	for !window.ShouldClose() {
-		// Timing
 		currentTime := glfw.GetTime()
 		deltaTime := float32(currentTime - lastTime)
 		lastTime = currentTime
@@ -149,12 +151,218 @@ func main() {
 		gl.UniformMatrix4fv(gl.GetUniformLocation(program, gl.Str("view\x00")), 1, false, &view[0])
 		gl.UniformMatrix4fv(gl.GetUniformLocation(program, gl.Str("model\x00")), 1, false, &model[0])
 
-		gl.BindVertexArray(vao)
-		gl.DrawElements(gl.TRIANGLES, int32(len(indices)), gl.UNSIGNED_INT, nil)
+		for _, chunk := range world.Chunks {
+			gl.BindVertexArray(chunk.VAO)
+			gl.DrawArrays(gl.TRIANGLES, 0, chunk.VertexCount)
+		}
 
 		window.SwapBuffers()
 		glfw.PollEvents()
 	}
+}
+
+const ChunkSize = 16
+
+type BlockID byte
+
+const (
+	BlockAir BlockID = iota
+	BlockGrass
+	BlockDirt
+	BlockStone
+)
+
+type Chunk struct {
+	Blocks      [ChunkSize][ChunkSize][ChunkSize]BlockID
+	VAO         uint32
+	VBO         uint32
+	VertexCount int32
+}
+
+func NewFlatChunk() *Chunk {
+	var c Chunk
+	for x := 0; x < ChunkSize; x++ {
+		for z := 0; z < ChunkSize; z++ {
+			for y := 0; y < ChunkSize; y++ {
+				if y < 4 {
+					c.Blocks[x][y][z] = BlockGrass
+				} else {
+					c.Blocks[x][y][z] = BlockAir
+				}
+			}
+		}
+	}
+	return &c
+}
+
+func (c *Chunk) GenerateMesh() []float32 {
+	var mesh []float32
+	for x := 0; x < ChunkSize; x++ {
+		for y := 0; y < ChunkSize; y++ {
+			for z := 0; z < ChunkSize; z++ {
+				block := c.Blocks[x][y][z]
+				if block == BlockAir {
+					continue
+				}
+				// Right
+				if x == ChunkSize-1 || c.Blocks[x+1][y][z] == BlockAir {
+					mesh = append(mesh, createFace(float32(x), float32(y), float32(z), "right")...)
+				}
+				// Left
+				if x == 0 || c.Blocks[x-1][y][z] == BlockAir {
+					mesh = append(mesh, createFace(float32(x), float32(y), float32(z), "left")...)
+				}
+				// Top
+				if y == ChunkSize-1 || c.Blocks[x][y+1][z] == BlockAir {
+					mesh = append(mesh, createFace(float32(x), float32(y), float32(z), "top")...)
+				}
+				// Bottom
+				if y == 0 || c.Blocks[x][y-1][z] == BlockAir {
+					mesh = append(mesh, createFace(float32(x), float32(y), float32(z), "bottom")...)
+				}
+				// Front
+				if z == ChunkSize-1 || c.Blocks[x][y][z+1] == BlockAir {
+					mesh = append(mesh, createFace(float32(x), float32(y), float32(z), "front")...)
+				}
+				// Back
+				if z == 0 || c.Blocks[x][y][z-1] == BlockAir {
+					mesh = append(mesh, createFace(float32(x), float32(y), float32(z), "back")...)
+				}
+			}
+		}
+	}
+	return mesh
+}
+
+func (c *Chunk) UploadMesh() {
+	mesh := c.GenerateMesh()
+	vao, vbo := UploadMesh(mesh)
+	c.VAO = vao
+	c.VBO = vbo
+	c.VertexCount = int32(len(mesh) / 5) // 5 floats per vertex: x,y,z,u,v
+}
+
+func UploadMesh(vertices []float32) (vao, vbo uint32) {
+	gl.GenVertexArrays(1, &vao)
+	gl.GenBuffers(1, &vbo)
+
+	gl.BindVertexArray(vao)
+	gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
+	gl.BufferData(gl.ARRAY_BUFFER, len(vertices)*4, gl.Ptr(vertices), gl.STATIC_DRAW)
+
+	// position attribute
+	gl.VertexAttribPointer(0, 3, gl.FLOAT, false, 5*4, gl.PtrOffset(0))
+	gl.EnableVertexAttribArray(0)
+	// texCoord attribute
+	gl.VertexAttribPointer(1, 2, gl.FLOAT, false, 5*4, gl.PtrOffset(3*4))
+	gl.EnableVertexAttribArray(1)
+
+	return
+}
+
+// createFace returns 6 vertices (2 triangles) for a face at block (x,y,z)
+// each vertex has 5 floats: position x,y,z and texCoord u,v
+func createFace(x, y, z float32, face string) []float32 {
+	// cube size = 1, block positioned at (x,y,z)
+	// vertices for each face with texture coords:
+	switch face {
+	case "right":
+		return []float32{
+			x + 1, y, z, 1, 0,
+			x + 1, y + 1, z, 1, 1,
+			x + 1, y + 1, z + 1, 0, 1,
+
+			x + 1, y, z, 1, 0,
+			x + 1, y + 1, z + 1, 0, 1,
+			x + 1, y, z + 1, 0, 0,
+		}
+	case "left":
+		return []float32{
+			x, y, z, 0, 0,
+			x, y + 1, z + 1, 1, 1,
+			x, y + 1, z, 0, 1,
+
+			x, y, z, 0, 0,
+			x, y, z + 1, 1, 0,
+			x, y + 1, z + 1, 1, 1,
+		}
+	case "top":
+		return []float32{
+			x, y + 1, z, 0, 0,
+			x + 1, y + 1, z, 1, 0,
+			x + 1, y + 1, z + 1, 1, 1,
+
+			x, y + 1, z, 0, 0,
+			x + 1, y + 1, z + 1, 1, 1,
+			x, y + 1, z + 1, 0, 1,
+		}
+	case "bottom":
+		return []float32{
+			x, y, z, 0, 0,
+			x + 1, y, z + 1, 1, 1,
+			x + 1, y, z, 1, 0,
+
+			x, y, z, 0, 0,
+			x, y, z + 1, 0, 1,
+			x + 1, y, z + 1, 1, 1,
+		}
+	case "front":
+		return []float32{
+			x, y, z + 1, 0, 0,
+			x + 1, y + 1, z + 1, 1, 1,
+			x + 1, y, z + 1, 1, 0,
+
+			x, y, z + 1, 0, 0,
+			x, y + 1, z + 1, 0, 1,
+			x + 1, y + 1, z + 1, 1, 1,
+		}
+	case "back":
+		return []float32{
+			x, y, z, 0, 0,
+			x + 1, y, z, 1, 0,
+			x + 1, y + 1, z, 1, 1,
+
+			x, y, z, 0, 0,
+			x + 1, y + 1, z, 1, 1,
+			x, y + 1, z, 0, 1,
+		}
+	}
+	return nil
+}
+
+// ---- Helper functions: texture loading and shader compilation ----
+
+func loadTexture(path string) (uint32, error) {
+	imgFile, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer imgFile.Close()
+	img, _, err := image.Decode(imgFile)
+	if err != nil {
+		return 0, err
+	}
+
+	rgba := image.NewRGBA(img.Bounds())
+	for y := 0; y < rgba.Bounds().Dy(); y++ {
+		for x := 0; x < rgba.Bounds().Dx(); x++ {
+			rgba.Set(x, y, img.At(x, y))
+		}
+	}
+
+	var texture uint32
+	gl.GenTextures(1, &texture)
+	gl.BindTexture(gl.TEXTURE_2D, texture)
+
+	gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, int32(rgba.Rect.Size().X), int32(rgba.Rect.Size().Y),
+		0, gl.RGBA, gl.UNSIGNED_BYTE, gl.Ptr(rgba.Pix))
+
+	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT)
+	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT)
+	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+
+	return texture, nil
 }
 
 func createShaderProgram(vertexSrc, fragmentSrc string) (uint32, error) {
@@ -166,26 +374,47 @@ func createShaderProgram(vertexSrc, fragmentSrc string) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	program := gl.CreateProgram()
-	gl.AttachShader(program, vertexShader)
-	gl.AttachShader(program, fragmentShader)
-	gl.LinkProgram(program)
+	prog := gl.CreateProgram()
+	gl.AttachShader(prog, vertexShader)
+	gl.AttachShader(prog, fragmentShader)
+	gl.LinkProgram(prog)
 
 	var status int32
-	gl.GetProgramiv(program, gl.LINK_STATUS, &status)
+	gl.GetProgramiv(prog, gl.LINK_STATUS, &status)
 	if status == gl.FALSE {
 		var logLength int32
-		gl.GetProgramiv(program, gl.INFO_LOG_LENGTH, &logLength)
-		logStr := make([]byte, logLength)
-		gl.GetProgramInfoLog(program, logLength, nil, &logStr[0])
-		return 0, fmt.Errorf("failed to link program: %v", string(logStr))
+		gl.GetProgramiv(prog, gl.INFO_LOG_LENGTH, &logLength)
+		log := make([]byte, logLength+1)
+		gl.GetProgramInfoLog(prog, logLength, nil, &log[0])
+		return 0, fmt.Errorf("failed to link program: %s", log)
 	}
 
 	gl.DeleteShader(vertexShader)
 	gl.DeleteShader(fragmentShader)
-	return program, nil
+
+	return prog, nil
 }
 
+func compileShader(src string, shaderType uint32) (uint32, error) {
+	shader := gl.CreateShader(shaderType)
+	csources, free := gl.Strs(src + "\x00")
+	gl.ShaderSource(shader, 1, csources, nil)
+	free()
+	gl.CompileShader(shader)
+
+	var status int32
+	gl.GetShaderiv(shader, gl.COMPILE_STATUS, &status)
+	if status == gl.FALSE {
+		var logLength int32
+		gl.GetShaderiv(shader, gl.INFO_LOG_LENGTH, &logLength)
+		log := make([]byte, logLength+1)
+		gl.GetShaderInfoLog(shader, logLength, nil, &log[0])
+		return 0, fmt.Errorf("failed to compile shader: %s", log)
+	}
+	return shader, nil
+}
+
+// --- Simple FPS camera for navigation ---
 type Camera struct {
 	Position mgl32.Vec3
 	Front    mgl32.Vec3
@@ -196,30 +425,32 @@ type Camera struct {
 	Yaw   float32
 	Pitch float32
 
-	Speed       float32
-	Sensitivity float32
+	MovementSpeed float32
+	MouseSens     float32
 }
 
 func NewCamera(position mgl32.Vec3) *Camera {
-	cam := &Camera{
-		Position:    position,
-		WorldUp:     mgl32.Vec3{0, 1, 0},
-		Yaw:         -90,
-		Pitch:       0,
-		Speed:       3.0,
-		Sensitivity: 0.1,
+	c := &Camera{
+		Position:      position,
+		Front:         mgl32.Vec3{0, 0, -1},
+		Up:            mgl32.Vec3{0, 1, 0},
+		WorldUp:       mgl32.Vec3{0, 1, 0},
+		Yaw:           -90,
+		Pitch:         0,
+		MovementSpeed: 5,
+		MouseSens:     0.1,
 	}
-	cam.updateVectors()
-	return cam
+	c.updateCameraVectors()
+	return c
 }
 
 func (c *Camera) GetViewMatrix() mgl32.Mat4 {
 	return mgl32.LookAtV(c.Position, c.Position.Add(c.Front), c.Up)
 }
 
-func (c *Camera) ProcessKeyboard(dir string, deltaTime float32) {
-	velocity := c.Speed * deltaTime
-	switch dir {
+func (c *Camera) ProcessKeyboard(direction string, deltaTime float32) {
+	velocity := c.MovementSpeed * deltaTime
+	switch direction {
 	case "forward":
 		c.Position = c.Position.Add(c.Front.Mul(velocity))
 	case "backward":
@@ -232,8 +463,11 @@ func (c *Camera) ProcessKeyboard(dir string, deltaTime float32) {
 }
 
 func (c *Camera) ProcessMouse(xoffset, yoffset float64) {
-	c.Yaw += float32(xoffset) * c.Sensitivity
-	c.Pitch -= float32(yoffset) * c.Sensitivity // invert y
+	xoff := float32(xoffset) * c.MouseSens
+	yoff := float32(-yoffset) * c.MouseSens
+
+	c.Yaw += xoff
+	c.Pitch += yoff
 
 	if c.Pitch > 89 {
 		c.Pitch = 89
@@ -241,38 +475,20 @@ func (c *Camera) ProcessMouse(xoffset, yoffset float64) {
 	if c.Pitch < -89 {
 		c.Pitch = -89
 	}
-	c.updateVectors()
+	c.updateCameraVectors()
 }
 
-func (c *Camera) updateVectors() {
-	yawRad := mgl32.DegToRad(c.Yaw)
-	pitchRad := mgl32.DegToRad(c.Pitch)
-
+func (c *Camera) updateCameraVectors() {
 	front := mgl32.Vec3{
-		float32(math.Cos(float64(yawRad)) * math.Cos(float64(pitchRad))),
-		float32(math.Sin(float64(pitchRad))),
-		float32(math.Sin(float64(yawRad)) * math.Cos(float64(pitchRad))),
+		float32(math.Cos(float64(mgl32.DegToRad(c.Yaw))) * math.Cos(float64(mgl32.DegToRad(c.Pitch)))),
+		float32(math.Sin(float64(mgl32.DegToRad(c.Pitch)))),
+		float32(math.Sin(float64(mgl32.DegToRad(c.Yaw))) * math.Cos(float64(mgl32.DegToRad(c.Pitch)))),
 	}
 	c.Front = front.Normalize()
 	c.Right = c.Front.Cross(c.WorldUp).Normalize()
 	c.Up = c.Right.Cross(c.Front).Normalize()
 }
 
-func compileShader(source string, shaderType uint32) (uint32, error) {
-	shader := gl.CreateShader(shaderType)
-	cSource, free := gl.Strs(source + "\x00") // Convert to C string and null-terminate
-	gl.ShaderSource(shader, 1, cSource, nil)
-	free() // Free C memory after use
-	gl.CompileShader(shader)
-
-	var status int32
-	gl.GetShaderiv(shader, gl.COMPILE_STATUS, &status)
-	if status == gl.FALSE {
-		var logLength int32
-		gl.GetShaderiv(shader, gl.INFO_LOG_LENGTH, &logLength)
-		logStr := make([]byte, logLength)
-		gl.GetShaderInfoLog(shader, logLength, nil, &logStr[0])
-		return 0, fmt.Errorf("failed to compile shader: %v", string(logStr))
-	}
-	return shader, nil
+type World struct {
+	Chunks map[[2]int]*Chunk
 }
