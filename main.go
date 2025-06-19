@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"runtime"
-
 	"something/debug"
 	"something/player"
 	"something/world"
@@ -44,6 +43,7 @@ func run() error {
 		return err
 	}
 	window.MakeContextCurrent()
+	glfw.SwapInterval(0)
 	window.SetSizeLimits(400, 300, glfw.DontCare, glfw.DontCare)
 
 	if err := gl.Init(); err != nil {
@@ -58,7 +58,7 @@ func run() error {
 		return err
 	}
 
-	texture, err := loadTexture("textures/atlas.png")
+	texture, err := loadTexture("textures/grass.png")
 	if err != nil {
 		return err
 	}
@@ -72,14 +72,6 @@ func run() error {
 	player := player.NewPlayer(mgl32.Vec3{0, 10, 0})
 	width, height := window.GetFramebufferSize()
 	projection := mgl32.Perspective(mgl32.DegToRad(45), float32(width)/float32(height), 0.1, 100.0)
-
-	window.SetFramebufferSizeCallback(func(w *glfw.Window, width, height int) {
-		if width == 0 || height == 0 {
-			return
-		}
-		gl.Viewport(0, 0, int32(width), int32(height))
-		projection = mgl32.Perspective(mgl32.DegToRad(45), float32(width)/float32(height), 0.1, 100.0)
-	})
 
 	cursorCaptured := true
 	window.SetInputMode(glfw.CursorMode, glfw.CursorDisabled)

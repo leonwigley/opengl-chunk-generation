@@ -3,12 +3,14 @@ package debug
 import (
 	"fmt"
 	"image"
-	_ "image/png"
 	"os"
 
 	"github.com/go-gl/gl/v4.6-core/gl"
 	"github.com/go-gl/glfw/v3.3/glfw"
 	"github.com/go-gl/mathgl/mgl32"
+	"github.com/golang/freetype/truetype"
+	"golang.org/x/image/font"
+	"golang.org/x/image/math/fixed"
 )
 
 type Debug struct {
@@ -21,6 +23,9 @@ type Debug struct {
 	vao, vbo      uint32
 	ortho         mgl32.Mat4
 	window        *glfw.Window
+	fontFace      font.Face
+	fontDPI       float64
+	fontSize      float64
 }
 
 func NewDebug(window *glfw.Window) (*Debug, error) {
@@ -31,8 +36,21 @@ func NewDebug(window *glfw.Window) (*Debug, error) {
 		frameCount:    0,
 		lastFrameTime: glfw.GetTime(),
 		window:        window,
-		ortho:         mgl32.Ortho(0, float32(width), 0, float32(height), -1, 1),
+		ortho:         mgl32.Ortho(0, float32(width), 0, float32(height), -1, 1), // Standard y-axis
+		fontDPI:       100,
+		fontSize:      20,
 	}
+
+	// Load TTF font
+	fontData, err := os.ReadFile("fonts/DejaVuSans.ttf")
+	if err != nil {
+		return nil, fmt.Errorf("failed to read font: %w", err)
+	}
+	fnt, err := truetype.Parse(fontData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse font: %w", err)
+	}
+	d.fontFace = truetype.NewFace(fnt, &truetype.Options{Size: d.fontSize, DPI: d.fontDPI})
 
 	// Compile text shader
 	program, err := createShaderProgram(textVertexShaderSource, textFragmentShaderSource)
@@ -40,13 +58,6 @@ func NewDebug(window *glfw.Window) (*Debug, error) {
 		return nil, err
 	}
 	d.program = program
-
-	// Load font texture
-	fontTexture, err := loadTexture("textures/font.png")
-	if err != nil {
-		return nil, err
-	}
-	d.fontTexture = fontTexture
 
 	// Setup text quad
 	d.vao, d.vbo = setupTextQuad()
@@ -83,15 +94,14 @@ func (d *Debug) Render(playerPos mgl32.Vec3) {
 	}
 	gl.UseProgram(d.program)
 	gl.ActiveTexture(gl.TEXTURE0)
-	gl.BindTexture(gl.TEXTURE_2D, d.fontTexture)
 	gl.UniformMatrix4fv(gl.GetUniformLocation(d.program, gl.Str("projection\x00")), 1, false, &d.ortho[0])
 	gl.BindVertexArray(d.vao)
 
-	width, height := d.window.GetFramebufferSize()
+	_, height := d.window.GetFramebufferSize()
 	coords := fmt.Sprintf("X: %.1f Y: %.1f Z: %.1f", playerPos.X(), playerPos.Y(), playerPos.Z())
 	fpsText := fmt.Sprintf("FPS: %.1f", d.FPS)
-	renderText(coords, 10, float32(height)-20, 16, d.program)
-	renderText(fpsText, 10, float32(height)-40, 16, d.program)
+	d.renderText(coords, 10, float32(height)-50, float32(d.fontSize))
+	d.renderText(fpsText, 10, float32(height)-100, float32(d.fontSize))
 }
 
 func (d *Debug) Cleanup() {
@@ -99,6 +109,64 @@ func (d *Debug) Cleanup() {
 	gl.DeleteTextures(1, &d.fontTexture)
 	gl.DeleteVertexArrays(1, &d.vao)
 	gl.DeleteBuffers(1, &d.vbo)
+	if d.fontFace != nil {
+		d.fontFace.Close()
+	}
+}
+
+func (d *Debug) renderText(text string, x, y, size float32) {
+	gl.UseProgram(d.program)
+	scaleFactor := size / float32(d.fontSize) * 2
+
+	drawer := &font.Drawer{
+		Dst:  nil,
+		Src:  image.White,
+		Face: d.fontFace,
+	}
+
+	xPos := x
+	for _, char := range text {
+		bounds, advance, ok := d.fontFace.GlyphBounds(char)
+		if !ok {
+			xPos += float32(advance.Ceil()) * scaleFactor
+			continue
+		}
+		w := (bounds.Max.X - bounds.Min.X).Ceil()
+		h := (bounds.Max.Y - bounds.Min.Y).Ceil()
+		if w <= 0 || h <= 0 {
+			xPos += float32(advance.Ceil()) * scaleFactor
+			continue
+		}
+
+		// Render glyph to image
+		img := image.NewRGBA(image.Rect(0, 0, w, h))
+		drawer.Dst = img
+		drawer.Dot = fixed.P(0, -bounds.Min.Y.Ceil())
+		drawer.DrawString(string(char))
+
+		// Upload glyph to texture
+		var texture uint32
+		gl.GenTextures(1, &texture)
+		gl.BindTexture(gl.TEXTURE_2D, texture)
+		gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, int32(w), int32(h), 0, gl.RGBA, gl.UNSIGNED_BYTE, gl.Ptr(img.Pix))
+		gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+		gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+		gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+		gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+
+		// Render quad
+		offset := mgl32.Vec2{xPos, y}
+		scale := mgl32.Vec2{float32(w) * scaleFactor, float32(h) * scaleFactor}
+		gl.Uniform2fv(gl.GetUniformLocation(d.program, gl.Str("offset\x00")), 1, &offset[0])
+		gl.Uniform2fv(gl.GetUniformLocation(d.program, gl.Str("scale\x00")), 1, &scale[0])
+		gl.DrawArrays(gl.TRIANGLES, 0, 6)
+
+		// Clean up texture
+		gl.DeleteTextures(1, &texture)
+
+		// Advance x position
+		xPos += float32(advance.Ceil()) * scaleFactor
+	}
 }
 
 const textVertexShaderSource = `
@@ -126,36 +194,6 @@ void main() {
     fragColor = vec4(1.0, 1.0, 1.0, color.a); // White text
 }
 `
-
-func loadTexture(path string) (uint32, error) {
-	imgFile, err := os.Open(path)
-	if err != nil {
-		return 0, fmt.Errorf("failed to open texture: %w", err)
-	}
-	defer imgFile.Close()
-	img, _, err := image.Decode(imgFile)
-	if err != nil {
-		return 0, fmt.Errorf("failed to decode texture: %w", err)
-	}
-
-	rgba := image.NewRGBA(img.Bounds())
-	for y := 0; y < img.Bounds().Dy(); y++ {
-		for x := 0; x < img.Bounds().Dx(); x++ {
-			rgba.Set(x, img.Bounds().Dy()-y-1, img.At(x, y))
-		}
-	}
-
-	var texture uint32
-	gl.GenTextures(1, &texture)
-	gl.BindTexture(gl.TEXTURE_2D, texture)
-	gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, int32(rgba.Rect.Size().X), int32(rgba.Rect.Size().Y),
-		0, gl.RGBA, gl.UNSIGNED_BYTE, gl.Ptr(rgba.Pix))
-	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
-	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
-	return texture, nil
-}
 
 func createShaderProgram(vertexSrc, fragmentSrc string) (uint32, error) {
 	vertexShader, err := compileShader(vertexSrc, gl.VERTEX_SHADER)
@@ -207,12 +245,12 @@ func compileShader(src string, shaderType uint32) (uint32, error) {
 
 func setupTextQuad() (uint32, uint32) {
 	vertices := []float32{
-		0, 0, 0, 1, // Bottom-left
-		1, 0, 1, 1, // Bottom-right
-		1, 1, 1, 0, // Top-right
-		0, 0, 0, 1, // Bottom-left
-		1, 1, 1, 0, // Top-right
-		0, 1, 0, 0, // Top-left
+		0, 0, 0, 1, // Bottom-left (flipped)
+		1, 0, 1, 1, // Bottom-right (flipped)
+		1, 1, 1, 0, // Top-right (flipped)
+		0, 0, 0, 1, // Bottom-left (flipped)
+		1, 1, 1, 0, // Top-right (flipped)
+		0, 1, 0, 0, // Top-left (flipped)
 	}
 	var vao, vbo uint32
 	gl.GenVertexArrays(1, &vao)
@@ -226,22 +264,4 @@ func setupTextQuad() (uint32, uint32) {
 	gl.EnableVertexAttribArray(1)
 	gl.BindVertexArray(0)
 	return vao, vbo
-}
-
-func renderText(text string, x, y, size float32, program uint32) {
-	gl.UseProgram(program)
-	charWidth := size
-	charHeight := size
-	for i, char := range text {
-		ascii := int(char)
-		u0 := float32((ascii % 16) / 16.0)
-		v0 := float32((ascii / 16) / 16.0)
-		u1 := u0 + 1.0/16.0
-		v1 := v0 + 1.0/16.0
-		offset := mgl32.Vec2{x + float32(i)*charWidth, y}
-		scale := mgl32.Vec2{charWidth, charHeight}
-		gl.Uniform2fv(gl.GetUniformLocation(program, gl.Str("offset\x00")), 1, &offset[0])
-		gl.Uniform2fv(gl.GetUniformLocation(program, gl.Str("scale\x00")), 1, &scale[0])
-		gl.DrawArrays(gl.TRIANGLES, 0, 6)
-	}
 }
