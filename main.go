@@ -319,22 +319,35 @@ type Chunk struct {
 	VertexCount int32
 }
 
-func NewFlatChunk() *Chunk {
-	var c Chunk
-	for x := 0; x < ChunkSize; x++ {
-		for z := 0; z < ChunkSize; z++ {
-			for y := 0; y < ChunkSize; y++ {
-				if y == 3 {
-					c.Blocks[x][y][z] = BlockGrass
-				} else if y < 3 {
-					c.Blocks[x][y][z] = BlockDirt
-				} else {
-					c.Blocks[x][y][z] = BlockAir
-				}
-			}
-		}
-	}	
-	return &c
+// In main.go, replace NewFlatChunk
+func NewFlatChunk(x, z int32) *Chunk {
+    var c Chunk
+    p := perlin.NewPerlin(2, 2, 3, 42) // Seed 42 for consistency
+    for i := 0; i < ChunkSize; i++ {
+        for k := 0; k < ChunkSize; k++ {
+            // Generate height using Perlin noise
+            worldX := float64(x*ChunkSize + int32(i)) / 50.0
+            worldZ := float64(z*ChunkSize + int32(k)) / 50.0
+            height := int(p.Noise2D(worldX, worldZ)*10 + 8) // Heights 0-16
+            if height < 0 {
+                height = 0
+            } else if height > ChunkSize-1 {
+                height = ChunkSize - 1
+            }
+            for j := 0; j < ChunkSize; j++ {
+                if j < height-2 {
+                    c.Blocks[i][j][k] = BlockStone
+                } else if j < height {
+                    c.Blocks[i][j][k] = BlockDirt
+                } else if j == height {
+                    c.Blocks[i][j][k] = BlockGrass
+                } else {
+                    c.Blocks[i][j][k] = BlockAir
+                }
+            }
+        }
+    }
+    return &c
 }
 
 func (c *Chunk) GenerateMesh() []float32 {
