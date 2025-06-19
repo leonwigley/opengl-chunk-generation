@@ -55,7 +55,7 @@ func (c *Camera) ProcessMouse(xoffset, yoffset float64) {
 	xoffset *= float64(c.MouseSens)
 	yoffset *= float64(c.MouseSens)
 	c.Yaw += float32(xoffset)
-	c.Pitch -= float32(yoffset)
+	c.Pitch -= float32(-yoffset)
 	if c.Pitch > 89 {
 		c.Pitch = 89
 	}

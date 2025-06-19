@@ -2,7 +2,6 @@ package player
 
 import (
 	"math"
-	"something/world"
 	worldpkg "something/world"
 
 	"github.com/go-gl/glfw/v3.3/glfw"
@@ -20,7 +19,7 @@ type Player struct {
 
 func NewPlayer(position mgl32.Vec3) *Player {
 	return &Player{
-		Camera:   NewCamera(position.Add(mgl32.Vec3{0, 1.6, 0})), // Eye level
+		Camera:   NewCamera(position.Add(mgl32.Vec3{0, 1.5, 0})),
 		Position: position,
 		Velocity: mgl32.Vec3{0, 0, 0},
 		OnGround: false,
@@ -29,7 +28,7 @@ func NewPlayer(position mgl32.Vec3) *Player {
 	}
 }
 
-func (p *Player) Update(window *glfw.Window, world *world.World, deltaTime float32) {
+func (p *Player) Update(window *glfw.Window, world *worldpkg.World, deltaTime float32) {
 	speed := float32(5.0)
 	if window.GetKey(glfw.KeyW) == glfw.Press {
 		p.Velocity = p.Velocity.Add(p.Camera.Front.Mul(speed * deltaTime))
@@ -47,9 +46,6 @@ func (p *Player) Update(window *glfw.Window, world *world.World, deltaTime float
 		p.Velocity[1] = 8.0
 		p.OnGround = false
 	}
-	if window.GetKey(glfw.KeyEscape) == glfw.Press {
-		window.SetShouldClose(true)
-	}
 
 	gravity := float32(-20.0)
 	p.Velocity[1] += gravity * deltaTime
@@ -57,7 +53,7 @@ func (p *Player) Update(window *glfw.Window, world *world.World, deltaTime float
 	p.Camera.Position = p.Position.Add(mgl32.Vec3{0, p.Height - 0.2, 0})
 }
 
-func (p *Player) move(world *world.World, deltaTime float32) {
+func (p *Player) move(world *worldpkg.World, deltaTime float32) {
 	newPos := p.Position
 	steps := []mgl32.Vec3{
 		{p.Velocity[0] * deltaTime, 0, 0},
@@ -76,7 +72,7 @@ func (p *Player) move(world *world.World, deltaTime float32) {
 	p.Position = newPos
 }
 
-func (p *Player) checkCollision(world *world.World, pos mgl32.Vec3) bool {
+func (p *Player) checkCollision(world *worldpkg.World, pos mgl32.Vec3) bool {
 	minX := int(math.Floor(float64(pos.X() - p.Width/2)))
 	maxX := int(math.Floor(float64(pos.X() + p.Width/2)))
 	minY := int(math.Floor(float64(pos.Y())))
