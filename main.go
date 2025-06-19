@@ -5,9 +5,11 @@ import (
 	"image"
 	_ "image/png"
 	"log"
-	"math"
 	"os"
 	"runtime"
+
+	"something/player"
+	"something/world"
 
 	"github.com/go-gl/gl/v4.6-core/gl"
 	"github.com/go-gl/glfw/v3.3/glfw"
@@ -15,7 +17,7 @@ import (
 )
 
 func init() {
-	runtime.LockOSThread() // GLFW requires the main thread locked
+	runtime.LockOSThread()
 }
 
 func main() {
@@ -35,7 +37,7 @@ func run() error {
 	glfw.WindowHint(glfw.OpenGLProfile, glfw.OpenGLCoreProfile)
 	glfw.WindowHint(glfw.OpenGLForwardCompatible, glfw.True)
 
-	window, err := glfw.CreateWindow(800, 600, "Chunk Rendering", nil, nil)
+	window, err := glfw.CreateWindow(800, 600, "Leon's Unreal Forge", nil, nil)
 	if err != nil {
 		return err
 	}
@@ -46,8 +48,7 @@ func run() error {
 	}
 	gl.Enable(gl.DEPTH_TEST)
 	gl.Enable(gl.BLEND)
-gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
-
+	gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
 
 	program, err := createShaderProgram(vertexShaderSource, fragmentShaderSource)
 	if err != nil {
@@ -55,7 +56,7 @@ gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
 	}
 	gl.UseProgram(program)
 
-	texture, err := loadTexture("block.png")
+	texture, err := loadTexture("textures/atlas.png")
 	if err != nil {
 		return err
 	}
@@ -63,9 +64,8 @@ gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
 	gl.BindTexture(gl.TEXTURE_2D, texture)
 	gl.Uniform1i(gl.GetUniformLocation(program, gl.Str("texture1\x00")), 0)
 
-	camera := NewCamera(mgl32.Vec3{0, 0, 10})
+	player := player.NewPlayer(mgl32.Vec3{0, 10, 0})
 	projection := mgl32.Perspective(mgl32.DegToRad(45), 800.0/600.0, 0.1, 100.0)
-	model := mgl32.Ident4()
 
 	window.SetInputMode(glfw.CursorMode, glfw.CursorDisabled)
 	var (
@@ -81,78 +81,52 @@ gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
 		yoffset := ypos - lastY
 		lastX = xpos
 		lastY = ypos
-		camera.ProcessMouse(xoffset, yoffset)
+		player.Camera.ProcessMouse(xoffset, yoffset)
 	})
 
 	lastTime := glfw.GetTime()
-
-	world := World{
-		Chunks:      make(map[[2]int]*Chunk),
+	gameWorld := world.World{
+		Chunks:      make(map[[2]int]*world.Chunk),
 		ChunkRadius: 3,
 	}
-	initialChunk := NewFlatChunk()
+	initialChunk := world.NewChunk(0, 0)
 	initialChunk.UploadMesh()
-	world.Chunks[[2]int{0, 0}] = initialChunk
-	world.UpdateChunks(camera.Position)
+	gameWorld.Chunks[[2]int{0, 0}] = initialChunk
+	gameWorld.UpdateChunks(player.Camera.Position)
 
 	for !window.ShouldClose() {
 		currentTime := glfw.GetTime()
 		deltaTime := float32(currentTime - lastTime)
 		lastTime = currentTime
 
-		// Process keyboard input
-		processInput(window, camera, deltaTime)
+		player.Update(window, &gameWorld, deltaTime)
+		gameWorld.UpdateChunks(player.Camera.Position)
 
-		// Rendering setup
 		gl.ClearColor(0.2, 0.3, 0.3, 1.0)
 		gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 
-		view := camera.GetViewMatrix()
-
+		view := player.Camera.GetViewMatrix()
 		gl.UseProgram(program)
 		gl.UniformMatrix4fv(gl.GetUniformLocation(program, gl.Str("projection\x00")), 1, false, &projection[0])
 		gl.UniformMatrix4fv(gl.GetUniformLocation(program, gl.Str("view\x00")), 1, false, &view[0])
 
-		// Render all chunks
-		for pos, chunk := range world.Chunks {
-			model := mgl32.Translate3D(float32(pos[0]*ChunkSize), 0, float32(pos[1]*ChunkSize))
+		for pos, chunk := range gameWorld.Chunks {
+			model := mgl32.Translate3D(float32(pos[0]*world.ChunkSize), 0, float32(pos[1]*world.ChunkSize))
 			gl.UniformMatrix4fv(gl.GetUniformLocation(program, gl.Str("model\x00")), 1, false, &model[0])
 			gl.BindVertexArray(chunk.VAO)
 			gl.DrawArrays(gl.TRIANGLES, 0, chunk.VertexCount)
 		}
 
-		// Set lighting uniforms
 		lightDirLoc := gl.GetUniformLocation(program, gl.Str("lightDir\x00"))
 		viewPosLoc := gl.GetUniformLocation(program, gl.Str("viewPos\x00"))
 		gl.Uniform3f(lightDirLoc, 0.5, -1.0, 0.3)
-		gl.Uniform3f(viewPosLoc, camera.Position.X(), camera.Position.Y(), camera.Position.Z())
+		gl.Uniform3f(viewPosLoc, player.Camera.Position.X(), player.Camera.Position.Y(), player.Camera.Position.Z())
 
 		window.SwapBuffers()
 		glfw.PollEvents()
 	}
-
 	return nil
 }
-
-func processInput(window *glfw.Window, camera *Camera, deltaTime float32) {
-	if window.GetKey(glfw.KeyEscape) == glfw.Press {
-		window.SetShouldClose(true)
-	}
-	if window.GetKey(glfw.KeyW) == glfw.Press {
-		camera.ProcessKeyboard("forward", deltaTime)
-	}
-	if window.GetKey(glfw.KeyS) == glfw.Press {
-		camera.ProcessKeyboard("backward", deltaTime)
-	}
-	if window.GetKey(glfw.KeyA) == glfw.Press {
-		camera.ProcessKeyboard("left", deltaTime)
-	}
-	if window.GetKey(glfw.KeyD) == glfw.Press {
-		camera.ProcessKeyboard("right", deltaTime)
-	}
-}
-
-// You can keep your existing vertexShaderSource and fragmentShaderSource strings here:
 
 const vertexShaderSource = `
 #version 460 core
@@ -171,7 +145,6 @@ uniform mat4 projection;
 void main() {
     FragPos = vec3(model * vec4(position, 1.0));
     Normal = mat3(transpose(inverse(model))) * normal;
-
     gl_Position = projection * view * vec4(FragPos, 1.0);
     TexCoord = texCoord;
 }
@@ -192,346 +165,41 @@ uniform vec3 viewPos;
 void main() {
     vec3 norm = normalize(Normal);
     vec3 lightDirection = normalize(-lightDir);
-
     float diff = max(dot(norm, lightDirection), 0.0);
     vec3 ambient = 0.1 * texture(texture1, TexCoord).rgb;
     vec3 diffuse = diff * texture(texture1, TexCoord).rgb;
     vec3 result = ambient + diffuse;
-
     fragColor = vec4(result, 1.0);
 }
 `
 
-	program, err := createShaderProgram(vertexShader, fragmentShader)
-	if err != nil {
-		log.Fatalf("Shader error: %v", err)
-	}
-	gl.UseProgram(program)
-
-	texture, err := loadTexture("block.png")
-	if err != nil {
-		log.Fatalf("texture error: %v", err)
-	}
-
-	gl.ActiveTexture(gl.TEXTURE0)
-	gl.BindTexture(gl.TEXTURE_2D, texture)
-	gl.Uniform1i(gl.GetUniformLocation(program, gl.Str("texture1\x00")), 0)
-
-	// Camera setup
-	camera := NewCamera(mgl32.Vec3{0, 0, 10})
-	projection := mgl32.Perspective(mgl32.DegToRad(45), 800.0/600.0, 0.1, 100.0)
-	model := mgl32.Ident4()
-
-	window.SetInputMode(glfw.CursorMode, glfw.CursorDisabled)
-
-	var lastX, lastY float64 = 400, 300
-	firstMouse := true
-	window.SetCursorPosCallback(func(w *glfw.Window, xpos, ypos float64) {
-		if firstMouse {
-			lastX, lastY = xpos, ypos
-			firstMouse = false
-		}
-		xoffset := xpos - lastX
-		yoffset := ypos - lastY
-		lastX = xpos
-		lastY = ypos
-		camera.ProcessMouse(xoffset, yoffset)
-	})
-
-	lastTime := glfw.GetTime()
-
-	// Create world and one chunk
-	world := World{
-		Chunks:      make(map[[2]int]*Chunk),
-		ChunkRadius: 3,
-	}
-	chunk := NewFlatChunk()
-	chunk.UploadMesh()
-	world.Chunks[[2]int{0, 0}] = chunk
-	world.UpdateChunks(camera.Position)
-
-	// Main loop
-	for !window.ShouldClose() {
-		currentTime := glfw.GetTime()
-		deltaTime := float32(currentTime - lastTime)
-		lastTime = currentTime
-
-		// Input
-		if window.GetKey(glfw.KeyEscape) == glfw.Press {
-			window.SetShouldClose(true)
-		}
-		if window.GetKey(glfw.KeyW) == glfw.Press {
-			camera.ProcessKeyboard("forward", deltaTime)
-		}
-		if window.GetKey(glfw.KeyS) == glfw.Press {
-			camera.ProcessKeyboard("backward", deltaTime)
-		}
-		if window.GetKey(glfw.KeyA) == glfw.Press {
-			camera.ProcessKeyboard("left", deltaTime)
-		}
-		if window.GetKey(glfw.KeyD) == glfw.Press {
-			camera.ProcessKeyboard("right", deltaTime)
-		}
-
-		// Rendering
-		gl.ClearColor(0.2, 0.3, 0.3, 1.0)
-		gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
-
-		view := camera.GetViewMatrix()
-
-		gl.UseProgram(program)
-		gl.UniformMatrix4fv(gl.GetUniformLocation(program, gl.Str("projection\x00")), 1, false, &projection[0])
-		gl.UniformMatrix4fv(gl.GetUniformLocation(program, gl.Str("view\x00")), 1, false, &view[0])
-		gl.UniformMatrix4fv(gl.GetUniformLocation(program, gl.Str("model\x00")), 1, false, &model[0])
-
-		for pos, chunk := range world.Chunks {
-			model := mgl32.Translate3D(float32(pos[0]*ChunkSize), 0, float32(pos[1]*ChunkSize))
-			gl.UniformMatrix4fv(gl.GetUniformLocation(program, gl.Str("model\x00")), 1, false, &model[0])
-			gl.BindVertexArray(chunk.VAO)
-			gl.DrawArrays(gl.TRIANGLES, 0, chunk.VertexCount)
-		}
-
-		lightDirUniform := gl.GetUniformLocation(program, gl.Str("lightDir\x00"))
-		viewPosUniform := gl.GetUniformLocation(program, gl.Str("viewPos\x00"))
-		gl.Uniform3f(lightDirUniform, 0.5, -1.0, 0.3) // Example light direction (sunlight)
-		gl.Uniform3f(viewPosUniform, camera.Position.X(), camera.Position.Y(), camera.Position.Z())
-
-		window.SwapBuffers()
-		glfw.PollEvents()
-	}
-}
-
-const ChunkSize = 16
-
-type BlockID byte
-
-const (
-	BlockAir BlockID = iota
-	BlockGrass
-	BlockDirt
-	BlockStone
-)
-
-type Chunk struct {
-	Blocks      [ChunkSize][ChunkSize][ChunkSize]BlockID
-	VAO         uint32
-	VBO         uint32
-	VertexCount int32
-}
-
-// In main.go, replace NewFlatChunk
-func NewFlatChunk(x, z int32) *Chunk {
-    var c Chunk
-    p := perlin.NewPerlin(2, 2, 3, 42) // Seed 42 for consistency
-    for i := 0; i < ChunkSize; i++ {
-        for k := 0; k < ChunkSize; k++ {
-            // Generate height using Perlin noise
-            worldX := float64(x*ChunkSize + int32(i)) / 50.0
-            worldZ := float64(z*ChunkSize + int32(k)) / 50.0
-            height := int(p.Noise2D(worldX, worldZ)*10 + 8) // Heights 0-16
-            if height < 0 {
-                height = 0
-            } else if height > ChunkSize-1 {
-                height = ChunkSize - 1
-            }
-            for j := 0; j < ChunkSize; j++ {
-                if j < height-2 {
-                    c.Blocks[i][j][k] = BlockStone
-                } else if j < height {
-                    c.Blocks[i][j][k] = BlockDirt
-                } else if j == height {
-                    c.Blocks[i][j][k] = BlockGrass
-                } else {
-                    c.Blocks[i][j][k] = BlockAir
-                }
-            }
-        }
-    }
-    return &c
-}
-
-func (c *Chunk) GenerateMesh() []float32 {
-	var mesh []float32
-	for x := 0; x < ChunkSize; x++ {
-		for y := 0; y < ChunkSize; y++ {
-			for z := 0; z < ChunkSize; z++ {
-				block := c.Blocks[x][y][z]
-				if block == BlockAir {
-					continue
-				}
-				// Right
-				if x == ChunkSize-1 || c.Blocks[x+1][y][z] == BlockAir {
-					mesh = append(mesh, createFace(float32(x), float32(y), float32(z), "right")...)
-				}
-				// Left
-				if x == 0 || c.Blocks[x-1][y][z] == BlockAir {
-					mesh = append(mesh, createFace(float32(x), float32(y), float32(z), "left")...)
-				}
-				// Top
-				if y == ChunkSize-1 || c.Blocks[x][y+1][z] == BlockAir {
-					mesh = append(mesh, createFace(float32(x), float32(y), float32(z), "top")...)
-				}
-				// Bottom
-				if y == 0 || c.Blocks[x][y-1][z] == BlockAir {
-					mesh = append(mesh, createFace(float32(x), float32(y), float32(z), "bottom")...)
-				}
-				// Front
-				if z == ChunkSize-1 || c.Blocks[x][y][z+1] == BlockAir {
-					mesh = append(mesh, createFace(float32(x), float32(y), float32(z), "front")...)
-				}
-				// Back
-				if z == 0 || c.Blocks[x][y][z-1] == BlockAir {
-					mesh = append(mesh, createFace(float32(x), float32(y), float32(z), "back")...)
-				}
-			}
-		}
-	}
-	return mesh
-}
-
-func (c *Chunk) UploadMesh() {
-	mesh := c.GenerateMesh()
-	vao, vbo := UploadMesh(mesh)
-	c.VAO = vao
-	c.VBO = vbo
-	c.VertexCount = int32(len(mesh) / 8) // 8 floats per vertex: x,y,z,nx,ny,nz,u,v
-}
-
-func UploadMesh(vertices []float32) (vao, vbo uint32) {
-	gl.GenVertexArrays(1, &vao)
-	gl.GenBuffers(1, &vbo)
-
-	gl.BindVertexArray(vao)
-	gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
-	gl.BufferData(gl.ARRAY_BUFFER, len(vertices)*4, gl.Ptr(vertices), gl.STATIC_DRAW)
-
-	// position attribute
-	gl.VertexAttribPointer(0, 3, gl.FLOAT, false, 8*4, gl.PtrOffset(0))
-	gl.EnableVertexAttribArray(0)
-	// normal attribute
-	gl.VertexAttribPointer(2, 3, gl.FLOAT, false, 8*4, gl.PtrOffset(3*4))
-	gl.EnableVertexAttribArray(2)
-	// texCoord attribute
-	gl.VertexAttribPointer(1, 2, gl.FLOAT, false, 8*4, gl.PtrOffset(6*4))
-	gl.EnableVertexAttribArray(1)
-
-	return
-}
-
-func createFace(x, y, z float32, face string) []float32 {
-	var nx, ny, nz float32
-	switch face {
-	case "right":
-		nx, ny, nz = 1, 0, 0
-	case "left":
-		nx, ny, nz = -1, 0, 0
-	case "top":
-		nx, ny, nz = 0, 1, 0
-	case "bottom":
-		nx, ny, nz = 0, -1, 0
-	case "front":
-		nx, ny, nz = 0, 0, 1
-	case "back":
-		nx, ny, nz = 0, 0, -1
-	}
-
-	switch face {
-	case "right":
-		return []float32{
-			x + 1, y, z, nx, ny, nz, 1, 0,
-			x + 1, y + 1, z, nx, ny, nz, 1, 1,
-			x + 1, y + 1, z + 1, nx, ny, nz, 0, 1,
-
-			x + 1, y, z, nx, ny, nz, 1, 0,
-			x + 1, y + 1, z + 1, nx, ny, nz, 0, 1,
-			x + 1, y, z + 1, nx, ny, nz, 0, 0,
-		}
-	case "left":
-		return []float32{
-			x, y, z, nx, ny, nz, 0, 0,
-			x, y + 1, z + 1, nx, ny, nz, 1, 1,
-			x, y + 1, z, nx, ny, nz, 0, 1,
-
-			x, y, z, nx, ny, nz, 0, 0,
-			x, y, z + 1, nx, ny, nz, 1, 0,
-			x, y + 1, z + 1, nx, ny, nz, 1, 1,
-		}
-	case "top":
-		return []float32{
-			x, y + 1, z, nx, ny, nz, 0, 0,
-			x + 1, y + 1, z, nx, ny, nz, 1, 0,
-			x + 1, y + 1, z + 1, nx, ny, nz, 1, 1,
-
-			x, y + 1, z, nx, ny, nz, 0, 0,
-			x + 1, y + 1, z + 1, nx, ny, nz, 1, 1,
-			x, y + 1, z + 1, nx, ny, nz, 0, 1,
-		}
-	case "bottom":
-		return []float32{
-			x, y, z, nx, ny, nz, 0, 0,
-			x + 1, y, z + 1, nx, ny, nz, 1, 1,
-			x + 1, y, z, nx, ny, nz, 1, 0,
-
-			x, y, z, nx, ny, nz, 0, 0,
-			x, y, z + 1, nx, ny, nz, 0, 1,
-			x + 1, y, z + 1, nx, ny, nz, 1, 1,
-		}
-	case "front":
-		return []float32{
-			x, y, z + 1, nx, ny, nz, 0, 0,
-			x + 1, y + 1, z + 1, nx, ny, nz, 1, 1,
-			x + 1, y, z + 1, nx, ny, nz, 1, 0,
-
-			x, y, z + 1, nx, ny, nz, 0, 0,
-			x, y + 1, z + 1, nx, ny, nz, 0, 1,
-			x + 1, y + 1, z + 1, nx, ny, nz, 1, 1,
-		}
-	case "back":
-		return []float32{
-			x, y, z, nx, ny, nz, 0, 0,
-			x + 1, y, z, nx, ny, nz, 1, 0,
-			x + 1, y + 1, z, nx, ny, nz, 1, 1,
-
-			x, y, z, nx, ny, nz, 0, 0,
-			x + 1, y + 1, z, nx, ny, nz, 1, 1,
-			x, y + 1, z, nx, ny, nz, 0, 1,
-		}
-	}
-	return nil
-}
-
-// ---- Helper functions: texture loading and shader compilation ----
-
 func loadTexture(path string) (uint32, error) {
 	imgFile, err := os.Open(path)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("failed to open texture: %w", err)
 	}
 	defer imgFile.Close()
 	img, _, err := image.Decode(imgFile)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("failed to decode texture: %w", err)
 	}
 
 	rgba := image.NewRGBA(img.Bounds())
-	for y := 0; y < rgba.Bounds().Dy(); y++ {
-		for x := 0; x < rgba.Bounds().Dx(); x++ {
-			rgba.Set(x, y, img.At(x, y))
+	for y := 0; y < img.Bounds().Dy(); y++ {
+		for x := 0; x < img.Bounds().Dx(); x++ {
+			rgba.Set(x, img.Bounds().Dy()-y-1, img.At(x, y)) // Flip vertically
 		}
 	}
 
 	var texture uint32
 	gl.GenTextures(1, &texture)
 	gl.BindTexture(gl.TEXTURE_2D, texture)
-
 	gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, int32(rgba.Rect.Size().X), int32(rgba.Rect.Size().Y),
 		0, gl.RGBA, gl.UNSIGNED_BYTE, gl.Ptr(rgba.Pix))
-
 	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT)
 	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT)
-	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-
+	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
 	return texture, nil
 }
 
@@ -561,7 +229,6 @@ func createShaderProgram(vertexSrc, fragmentSrc string) (uint32, error) {
 
 	gl.DeleteShader(vertexShader)
 	gl.DeleteShader(fragmentShader)
-
 	return prog, nil
 }
 
@@ -582,163 +249,4 @@ func compileShader(src string, shaderType uint32) (uint32, error) {
 		return 0, fmt.Errorf("failed to compile shader: %s", log)
 	}
 	return shader, nil
-}
-
-// --- Simple FPS camera for navigation ---
-type Camera struct {
-	Position mgl32.Vec3
-	Front    mgl32.Vec3
-	Up       mgl32.Vec3
-	Right    mgl32.Vec3
-	WorldUp  mgl32.Vec3
-
-	Yaw   float32
-	Pitch float32
-
-	MovementSpeed float32
-	MouseSens     float32
-}
-
-func NewCamera(position mgl32.Vec3) *Camera {
-	c := &Camera{
-		Position:      position,
-		Front:         mgl32.Vec3{0, 0, -1},
-		Up:            mgl32.Vec3{0, 1, 0},
-		WorldUp:       mgl32.Vec3{0, 1, 0},
-		Yaw:           -90,
-		Pitch:         0,
-		MovementSpeed: 5,
-		MouseSens:     0.1,
-	}
-	c.updateCameraVectors()
-	return c
-}
-
-func (c *Camera) GetViewMatrix() mgl32.Mat4 {
-	return mgl32.LookAtV(c.Position, c.Position.Add(c.Front), c.Up)
-}
-func (c *Camera) ProcessKeyboard(direction string, deltaTime float32) {
-    velocity := c.MovementSpeed * deltaTime
-    switch direction {
-    case "forward":
-        c.Position = c.Position.Add(c.Front.Mul(velocity))
-    case "backward":
-        c.Position = c.Position.Sub(c.Front.Mul(velocity))
-    case "left":
-        c.Position = c.Position.Sub(c.Right.Mul(velocity))
-    case "right":
-        c.Position = c.Position.Add(c.Right.Mul(velocity))
-    }
-}
-
-
-func (c *Camera) ProcessMouse(xoffset, yoffset float64) {
-    xoffset *= float64(c.MouseSens)
-    yoffset *= float64(c.MouseSens)
-
-    c.Yaw += float32(xoffset)
-    c.Pitch += float32(yoffset)
-
-    if c.Pitch > 89 {
-        c.Pitch = 89
-    }
-    if c.Pitch < -89 {
-        c.Pitch = -89
-    }
-
-    c.updateCameraVectors()
-}
-
-func (c *Camera) updateCameraVectors() {
-    front := mgl32.Vec3{
-        float32(math.Cos(float64(mgl32.DegToRad(c.Yaw))) * math.Cos(float64(mgl32.DegToRad(c.Pitch)))),
-        float32(math.Sin(float64(mgl32.DegToRad(c.Pitch)))),
-        float32(math.Sin(float64(mgl32.DegToRad(c.Yaw))) * math.Cos(float64(mgl32.DegToRad(c.Pitch)))),
-    }
-    c.Front = front.Normalize()
-    c.Right = c.Front.Cross(c.WorldUp).Normalize()
-    c.Up = c.Right.Cross(c.Front).Normalize()
-}
-
-type World struct {
-	Chunks      map[[2]int]*Chunk
-	ChunkRadius int
-}
-
-func (w *World) UpdateChunks(playerPos mgl32.Vec3) {
-	playerChunkX := int(math.Floor(float64(playerPos.X() / ChunkSize)))
-	playerChunkZ := int(math.Floor(float64(playerPos.Z() / ChunkSize)))
-
-	// Load new chunks around player
-	for x := playerChunkX - w.ChunkRadius; x <= playerChunkX+w.ChunkRadius; x++ {
-		for z := playerChunkZ - w.ChunkRadius; z <= playerChunkZ+w.ChunkRadius; z++ {
-			key := [2]int{x, z}
-			if _, exists := w.Chunks[key]; !exists {
-				chunk := NewFlatChunk() // You can make it more complex per (x,z)
-				chunk.UploadMesh()
-				w.Chunks[key] = chunk
-			}
-		}
-	}
-
-	// Unload chunks far away (optional)
-	for key := range w.Chunks {
-		x, z := key[0], key[1]
-		if x < playerChunkX-w.ChunkRadius || x > playerChunkX+w.ChunkRadius ||
-			z < playerChunkZ-w.ChunkRadius || z > playerChunkZ+w.ChunkRadius {
-			// Delete OpenGL buffers
-			gl.DeleteVertexArrays(1, &w.Chunks[key].VAO)
-			gl.DeleteBuffers(1, &w.Chunks[key].VBO)
-			delete(w.Chunks, key)
-		}
-	}
-}
-
-func isSolid(blocks [][][]bool, x, y, z int) bool {
-    sizeX := len(blocks)
-    sizeY := len(blocks[0])
-    sizeZ := len(blocks[0][0])
-
-    if x < 0 || x >= sizeX || y < 0 || y >= sizeY || z < 0 || z >= sizeZ {
-        return false
-    }
-    return blocks[x][y][z]
-}
-
-var faceOffsets = map[string][3]int{
-    "right":  {1, 0, 0},
-    "left":   {-1, 0, 0},
-    "top":    {0, 1, 0},
-    "bottom": {0, -1, 0},
-    "front":  {0, 0, 1},
-    "back":   {0, 0, -1},
-}
-
-func BuildMesh(blocks [][][]bool) []float32 {
-    var mesh []float32
-    sizeX := len(blocks)
-    sizeY := len(blocks[0])
-    sizeZ := len(blocks[0][0])
-
-    for x := 0; x < sizeX; x++ {
-        for y := 0; y < sizeY; y++ {
-            for z := 0; z < sizeZ; z++ {
-                if !blocks[x][y][z] {
-                    continue
-                }
-
-                for face, offset := range faceOffsets {
-                    nx := x + offset[0]
-                    ny := y + offset[1]
-                    nz := z + offset[2]
-
-                    if !isSolid(blocks, nx, ny, nz) {
-                        // Add the face only if neighbor is empty or out of bounds
-                        mesh = append(mesh, createFace(float32(x), float32(y), float32(z), face)...)
-                    }
-                }
-            }
-        }
-    }
-    return mesh
 }

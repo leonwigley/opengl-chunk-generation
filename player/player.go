@@ -1,0 +1,110 @@
+package player
+
+import (
+	"math"
+	"something/world"
+	worldpkg "something/world"
+
+	"github.com/go-gl/glfw/v3.3/glfw"
+	"github.com/go-gl/mathgl/mgl32"
+)
+
+type Player struct {
+	Camera   *Camera
+	Position mgl32.Vec3
+	Velocity mgl32.Vec3
+	OnGround bool
+	Height   float32
+	Width    float32
+}
+
+func NewPlayer(position mgl32.Vec3) *Player {
+	return &Player{
+		Camera:   NewCamera(position.Add(mgl32.Vec3{0, 1.6, 0})), // Eye level
+		Position: position,
+		Velocity: mgl32.Vec3{0, 0, 0},
+		OnGround: false,
+		Height:   1.8,
+		Width:    0.6,
+	}
+}
+
+func (p *Player) Update(window *glfw.Window, world *world.World, deltaTime float32) {
+	speed := float32(5.0)
+	if window.GetKey(glfw.KeyW) == glfw.Press {
+		p.Velocity = p.Velocity.Add(p.Camera.Front.Mul(speed * deltaTime))
+	}
+	if window.GetKey(glfw.KeyS) == glfw.Press {
+		p.Velocity = p.Velocity.Sub(p.Camera.Front.Mul(speed * deltaTime))
+	}
+	if window.GetKey(glfw.KeyA) == glfw.Press {
+		p.Velocity = p.Velocity.Sub(p.Camera.Right.Mul(speed * deltaTime))
+	}
+	if window.GetKey(glfw.KeyD) == glfw.Press {
+		p.Velocity = p.Velocity.Add(p.Camera.Right.Mul(speed * deltaTime))
+	}
+	if window.GetKey(glfw.KeySpace) == glfw.Press && p.OnGround {
+		p.Velocity[1] = 8.0
+		p.OnGround = false
+	}
+	if window.GetKey(glfw.KeyEscape) == glfw.Press {
+		window.SetShouldClose(true)
+	}
+
+	gravity := float32(-20.0)
+	p.Velocity[1] += gravity * deltaTime
+	p.move(world, deltaTime)
+	p.Camera.Position = p.Position.Add(mgl32.Vec3{0, p.Height - 0.2, 0})
+}
+
+func (p *Player) move(world *world.World, deltaTime float32) {
+	newPos := p.Position
+	steps := []mgl32.Vec3{
+		{p.Velocity[0] * deltaTime, 0, 0},
+		{0, p.Velocity[1] * deltaTime, 0},
+		{0, 0, p.Velocity[2] * deltaTime},
+	}
+	for _, step := range steps {
+		testPos := newPos.Add(step)
+		if !p.checkCollision(world, testPos) {
+			newPos = testPos
+		} else if step[1] < 0 {
+			p.Velocity[1] = 0
+			p.OnGround = true
+		}
+	}
+	p.Position = newPos
+}
+
+func (p *Player) checkCollision(world *world.World, pos mgl32.Vec3) bool {
+	minX := int(math.Floor(float64(pos.X() - p.Width/2)))
+	maxX := int(math.Floor(float64(pos.X() + p.Width/2)))
+	minY := int(math.Floor(float64(pos.Y())))
+	maxY := int(math.Floor(float64(pos.Y() + p.Height)))
+	minZ := int(math.Floor(float64(pos.Z() - p.Width/2)))
+	maxZ := int(math.Floor(float64(pos.Z() + p.Width/2)))
+	for x := minX; x <= maxX; x++ {
+		for y := minY; y <= maxY; y++ {
+			for z := minZ; z <= maxZ; z++ {
+				chunkX, chunkZ := x/int(worldpkg.ChunkSize), z/int(worldpkg.ChunkSize)
+				localX, localY, localZ := x%int(worldpkg.ChunkSize), y, z%int(worldpkg.ChunkSize)
+				if localX < 0 {
+					localX += int(worldpkg.ChunkSize)
+					chunkX--
+				}
+				if localZ < 0 {
+					localZ += int(worldpkg.ChunkSize)
+					chunkZ--
+				}
+				if localY < 0 || localY >= int(worldpkg.ChunkSize) {
+					continue
+				}
+				chunk, exists := world.Chunks[[2]int{chunkX, chunkZ}]
+				if exists && chunk.Blocks[localX][localY][localZ] != worldpkg.BlockAir {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
