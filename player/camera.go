@@ -75,3 +75,7 @@ func (c *Camera) updateCameraVectors() {
 	c.Right = c.Front.Cross(c.WorldUp).Normalize()
 	c.Up = c.Right.Cross(c.Front).Normalize()
 }
+
+func thirdPerson() {
+
+}

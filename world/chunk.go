@@ -1,23 +1,14 @@
 package world
 
 import (
+	"something/block"
+
 	"github.com/aquilax/go-perlin"
 	"github.com/go-gl/gl/v4.6-core/gl"
 )
 
-const ChunkSize = 16
-
-type BlockID byte
-
-const (
-	BlockAir BlockID = iota
-	BlockGrass
-	BlockDirt
-	BlockStone
-)
-
 type Chunk struct {
-	Blocks      [ChunkSize][ChunkSize][ChunkSize]BlockID
+	Blocks      [ChunkSize][ChunkSize][ChunkSize]block.BlockID
 	VAO         uint32
 	VBO         uint32
 	VertexCount int32
@@ -38,13 +29,13 @@ func NewChunk(x, z int32) *Chunk {
 			}
 			for j := 0; j < ChunkSize; j++ {
 				if j < height-2 {
-					c.Blocks[i][j][k] = BlockStone
+					c.Blocks[i][j][k] = block.BlockStone
 				} else if j < height {
-					c.Blocks[i][j][k] = BlockDirt
+					c.Blocks[i][j][k] = block.BlockDirt
 				} else if j == height {
-					c.Blocks[i][j][k] = BlockGrass
+					c.Blocks[i][j][k] = block.BlockGrass
 				} else {
-					c.Blocks[i][j][k] = BlockAir
+					c.Blocks[i][j][k] = block.BlockAir
 				}
 			}
 		}
@@ -57,27 +48,22 @@ func (c *Chunk) GenerateMesh() []float32 {
 	for x := 0; x < ChunkSize; x++ {
 		for y := 0; y < ChunkSize; y++ {
 			for z := 0; z < ChunkSize; z++ {
-				block := c.Blocks[x][y][z]
-				if block == BlockAir {
+				blockID := c.Blocks[x][y][z]
+				b := block.Blocks[blockID]
+				if !b.IsSolid() {
 					continue
 				}
-				if x == ChunkSize-1 || c.Blocks[x+1][y][z] == BlockAir {
-					mesh = append(mesh, createFace(float32(x), float32(y), float32(z), "right", block)...)
-				}
-				if x == 0 || c.Blocks[x-1][y][z] == BlockAir {
-					mesh = append(mesh, createFace(float32(x), float32(y), float32(z), "left", block)...)
-				}
-				if y == ChunkSize-1 || c.Blocks[x][y+1][z] == BlockAir {
-					mesh = append(mesh, createFace(float32(x), float32(y), float32(z), "top", block)...)
-				}
-				if y == 0 || c.Blocks[x][y-1][z] == BlockAir {
-					mesh = append(mesh, createFace(float32(x), float32(y), float32(z), "bottom", block)...)
-				}
-				if z == ChunkSize-1 || c.Blocks[x][y][z+1] == BlockAir {
-					mesh = append(mesh, createFace(float32(x), float32(y), float32(z), "front", block)...)
-				}
-				if z == 0 || c.Blocks[x][y][z-1] == BlockAir {
-					mesh = append(mesh, createFace(float32(x), float32(y), float32(z), "back", block)...)
+				faces := []string{"right", "left", "top", "bottom", "front", "back"}
+				offsets := [][3]int{{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}
+				for i, face := range faces {
+					nx, ny, nz := x+offsets[i][0], y+offsets[i][1], z+offsets[i][2]
+					if nx < 0 || nx >= ChunkSize || ny < 0 || ny >= ChunkSize || nz < 0 || nz >= ChunkSize {
+						mesh = append(mesh, c.createFace(float32(x), float32(y), float32(z), face, blockID)...)
+						continue
+					}
+					if !block.Blocks[c.Blocks[nx][ny][nz]].IsSolid() {
+						mesh = append(mesh, c.createFace(float32(x), float32(y), float32(z), face, blockID)...)
+					}
 				}
 			}
 		}
@@ -87,30 +73,19 @@ func (c *Chunk) GenerateMesh() []float32 {
 
 func (c *Chunk) UploadMesh() {
 	mesh := c.GenerateMesh()
-	vao, vbo := UploadMesh(mesh)
-	c.VAO = vao
-	c.VBO = vbo
+	c.VAO, c.VBO = uploadMesh(mesh)
 	c.VertexCount = int32(len(mesh) / 8)
 }
 
-func UploadMesh(vertices []float32) (vao, vbo uint32) {
-	gl.GenVertexArrays(1, &vao)
-	gl.GenBuffers(1, &vbo)
-	gl.BindVertexArray(vao)
-	gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
-	gl.BufferData(gl.ARRAY_BUFFER, len(vertices)*4, gl.Ptr(vertices), gl.STATIC_DRAW)
-	gl.VertexAttribPointer(0, 3, gl.FLOAT, false, 8*4, gl.PtrOffset(0))
-	gl.EnableVertexAttribArray(0)
-	gl.VertexAttribPointer(2, 3, gl.FLOAT, false, 8*4, gl.PtrOffset(3*4))
-	gl.EnableVertexAttribArray(2)
-	gl.VertexAttribPointer(1, 2, gl.FLOAT, false, 8*4, gl.PtrOffset(6*4))
-	gl.EnableVertexAttribArray(1)
-	return
+func (c *Chunk) Cleanup() {
+	gl.DeleteVertexArrays(1, &c.VAO)
+	gl.DeleteBuffers(1, &c.VBO)
 }
 
-func createFace(x, y, z float32, face string, block BlockID) []float32 {
+func (c *Chunk) createFace(x, y, z float32, face string, blockID block.BlockID) []float32 {
+	b := block.Blocks[blockID]
+	u0, v0, u1, v1 := b.GetUVs(face)
 	var nx, ny, nz float32
-	var u0, v0, u1, v1 float32
 	switch face {
 	case "right":
 		nx, ny, nz = 1, 0, 0
@@ -125,22 +100,6 @@ func createFace(x, y, z float32, face string, block BlockID) []float32 {
 	case "back":
 		nx, ny, nz = 0, 0, -1
 	}
-
-	switch block {
-	case BlockGrass:
-		if face == "top" {
-			u0, v0, u1, v1 = 0.0/4, 0.0/4, 1.0/4, 1.0/4
-		} else {
-			u0, v0, u1, v1 = 0.0/4, 1.0/4, 1.0/4, 2.0/4
-		}
-	case BlockDirt:
-		u0, v0, u1, v1 = 1.0/4, 0.0/4, 2.0/4, 1.0/4
-	case BlockStone:
-		u0, v0, u1, v1 = 2.0/4, 0.0/4, 3.0/4, 1.0/4
-	default:
-		u0, v0, u1, v1 = 3.0/4, 0.0/4, 4.0/4, 1.0/4
-	}
-
 	switch face {
 	case "right":
 		return []float32{
@@ -200,46 +159,18 @@ func createFace(x, y, z float32, face string, block BlockID) []float32 {
 	return nil
 }
 
-func isSolid(blocks [][][]bool, x, y, z int) bool {
-	sizeX := len(blocks)
-	sizeY := len(blocks[0])
-	sizeZ := len(blocks[0][0])
-	if x < 0 || x >= sizeX || y < 0 || y >= sizeY || z < 0 || z >= sizeZ {
-		return false
-	}
-	return blocks[x][y][z]
-}
-
-var faceOffsets = map[string][3]int{
-	"right":  {1, 0, 0},
-	"left":   {-1, 0, 0},
-	"top":    {0, 1, 0},
-	"bottom": {0, -1, 0},
-	"front":  {0, 0, 1},
-	"back":   {0, 0, -1},
-}
-
-func BuildMesh(blocks [][][]bool) []float32 {
-	var mesh []float32
-	sizeX := len(blocks)
-	sizeY := len(blocks[0])
-	sizeZ := len(blocks[0][0])
-	for x := 0; x < sizeX; x++ {
-		for y := 0; y < sizeY; y++ {
-			for z := 0; z < sizeZ; z++ {
-				if !blocks[x][y][z] {
-					continue
-				}
-				for face, offset := range faceOffsets {
-					nx := x + offset[0]
-					ny := y + offset[1]
-					nz := z + offset[2]
-					if !isSolid(blocks, nx, ny, nz) {
-						mesh = append(mesh, createFace(float32(x), float32(y), float32(z), face, BlockAir)...)
-					}
-				}
-			}
-		}
-	}
-	return mesh
+func uploadMesh(vertices []float32) (vao, vbo uint32) {
+	gl.GenVertexArrays(1, &vao)
+	gl.GenBuffers(1, &vbo)
+	gl.BindVertexArray(vao)
+	gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
+	gl.BufferData(gl.ARRAY_BUFFER, len(vertices)*4, gl.Ptr(vertices), gl.STATIC_DRAW)
+	gl.VertexAttribPointer(0, 3, gl.FLOAT, false, 8*4, gl.PtrOffset(0))
+	gl.EnableVertexAttribArray(0)
+	gl.VertexAttribPointer(1, 2, gl.FLOAT, false, 8*4, gl.PtrOffset(6*4))
+	gl.EnableVertexAttribArray(1)
+	gl.VertexAttribPointer(2, 3, gl.FLOAT, false, 8*4, gl.PtrOffset(3*4))
+	gl.EnableVertexAttribArray(2)
+	gl.BindVertexArray(0)
+	return
 }

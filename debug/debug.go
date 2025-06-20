@@ -31,7 +31,7 @@ type Debug struct {
 func NewDebug(window *glfw.Window) (*Debug, error) {
 	width, height := window.GetFramebufferSize()
 	d := &Debug{
-		Enabled:       false,
+		Enabled:       true, // debug menu default
 		FPS:           0,
 		frameCount:    0,
 		lastFrameTime: glfw.GetTime(),
