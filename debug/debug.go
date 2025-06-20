@@ -42,7 +42,7 @@ func NewDebug(window *glfw.Window) (*Debug, error) {
 	}
 
 	// Load TTF font
-	fontData, err := os.ReadFile("fonts/DejaVuSans.ttf")
+	fontData, err := os.ReadFile("assets/fonts/DejaVuSans.ttf")
 	if err != nil {
 		return nil, fmt.Errorf("failed to read font: %w", err)
 	}

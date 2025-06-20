@@ -31,7 +31,7 @@ func (w *World) Init() error {
 	if err != nil {
 		return err
 	}
-	w.Texture, err = loadTexture("textures/grass.png")
+	w.Texture, err = loadTexture("assets/textures/grass.png")
 	if err != nil {
 		return err
 	}
